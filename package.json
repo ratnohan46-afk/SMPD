@@ -5,7 +5,7 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "register": "node src/index.js register"
+    "register": "node src/register-commands.js"
   },
   "dependencies": {
     "discord.js": "^14.22.1",
