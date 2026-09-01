@@ -11,8 +11,10 @@ FROM node:20-alpine
 RUN apk add --no-cache tini
 WORKDIR /app
 
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app ./
+COPY --from=build /app /app
+
+# SMPD uses SQLite and must be able to create/update smpd.sqlite.
+RUN chown -R node:node /app
 
 USER node
 ENTRYPOINT ["/sbin/tini", "--"]
