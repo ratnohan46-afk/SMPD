@@ -4,30 +4,16 @@ const commands=[
  new SlashCommandBuilder().setName("wallet").setDescription("Lihat alamat wallet Solana kamu."),
  new SlashCommandBuilder().setName("deposit").setDescription("Lihat alamat deposit SOL kamu."),
  new SlashCommandBuilder().setName("balance").setDescription("Lihat saldo SOL dan estimasi IDR."),
- new SlashCommandBuilder().setName("withdraw").setDescription("Withdraw SOL ke alamat Solana.")
-  .addStringOption(o=>o.setName("address").setDescription("Alamat tujuan").setRequired(true))
-  .addNumberOption(o=>o.setName("amount").setDescription("Jumlah SOL").setRequired(true).setMinValue(0.000001)),
- new SlashCommandBuilder().setName("tip").setDescription("Kirim saldo internal ke member.")
-  .addUserOption(o=>o.setName("user").setDescription("Penerima").setRequired(true))
-  .addNumberOption(o=>o.setName("amount").setDescription("Jumlah SOL").setRequired(true).setMinValue(0.000001)),
- new SlashCommandBuilder().setName("give").setDescription("Berikan saldo internal ke member.")
-  .addUserOption(o=>o.setName("user").setDescription("Penerima").setRequired(true))
-  .addNumberOption(o=>o.setName("amount").setDescription("Jumlah SOL").setRequired(true).setMinValue(0.000001)),
- new SlashCommandBuilder().setName("rain").setDescription("Bagikan SOL ke member yang aktif.")
-  .addNumberOption(o=>o.setName("amount").setDescription("Total SOL").setRequired(true).setMinValue(0.000001)),
- new SlashCommandBuilder().setName("giveaway").setDescription("Buat giveaway dengan tombol peserta.")
-  .addNumberOption(o=>o.setName("amount").setDescription("Hadiah SOL").setRequired(true).setMinValue(0.000001))
-  .addIntegerOption(o=>o.setName("minutes").setDescription("Durasi menit").setRequired(true).setMinValue(1).setMaxValue(1440)),
+ new SlashCommandBuilder().setName("withdraw").setDescription("Withdraw SOL ke alamat Solana.").addStringOption(o=>o.setName("address").setDescription("Alamat tujuan").setRequired(true)).addNumberOption(o=>o.setName("amount").setDescription("Jumlah SOL").setRequired(true).setMinValue(0.000001)),
+ new SlashCommandBuilder().setName("tip").setDescription("Kirim saldo internal ke member.").addUserOption(o=>o.setName("user").setDescription("Penerima").setRequired(true)).addNumberOption(o=>o.setName("amount").setDescription("Jumlah SOL").setRequired(true).setMinValue(0.000001)),
+ new SlashCommandBuilder().setName("give").setDescription("Berikan saldo internal ke member.").addUserOption(o=>o.setName("user").setDescription("Penerima").setRequired(true)).addNumberOption(o=>o.setName("amount").setDescription("Jumlah SOL").setRequired(true).setMinValue(0.000001)),
+ new SlashCommandBuilder().setName("rain").setDescription("Bagikan SOL ke member yang aktif.").addNumberOption(o=>o.setName("amount").setDescription("Total SOL").setRequired(true).setMinValue(0.000001)),
+ new SlashCommandBuilder().setName("giveaway").setDescription("Buat giveaway dengan tombol peserta.").addNumberOption(o=>o.setName("amount").setDescription("Hadiah SOL").setRequired(true).setMinValue(0.000001)).addIntegerOption(o=>o.setName("minutes").setDescription("Durasi menit").setRequired(true).setMinValue(1).setMaxValue(1440)),
  new SlashCommandBuilder().setName("history").setDescription("Riwayat 10 transaksi terakhir."),
- new SlashCommandBuilder().setName("smpd").setDescription("Perintah admin SMPD.")
-  .addSubcommand(s=>s.setName("admin").setDescription("Admin SMPD")
-   .addStringOption(o=>o.setName("action").setDescription("Aksi").setRequired(true).addChoices(
-    {name:"freeze",value:"freeze"},{name:"unfreeze",value:"unfreeze"},{name:"status",value:"status"},{name:"credit",value:"credit"},{name:"debit",value:"debit"}))
-   .addUserOption(o=>o.setName("user").setDescription("User untuk credit/debit"))
-   .addNumberOption(o=>o.setName("amount").setDescription("Jumlah SOL untuk credit/debit").setMinValue(0.000001)))
+ new SlashCommandBuilder().setName("coinflip").setDescription("Coinflip melawan saldo admin/House.").addNumberOption(o=>o.setName("amount").setDescription("Taruhan SOL").setRequired(true).setMinValue(0.000001)).addStringOption(o=>o.setName("choice").setDescription("Heads atau Tails").setRequired(true).addChoices({name:"Heads",value:"heads"},{name:"Tails",value:"tails"})),
+ new SlashCommandBuilder().setName("dice").setDescription("Tebak angka dadu 1-6.").addNumberOption(o=>o.setName("amount").setDescription("Taruhan SOL").setRequired(true).setMinValue(0.000001)).addIntegerOption(o=>o.setName("number").setDescription("Angka 1-6").setRequired(true).setMinValue(1).setMaxValue(6)),
+ new SlashCommandBuilder().setName("tebak-angka").setDescription("Tebak angka 1-10.").addNumberOption(o=>o.setName("amount").setDescription("Taruhan SOL").setRequired(true).setMinValue(0.000001)).addIntegerOption(o=>o.setName("number").setDescription("Angka 1-10").setRequired(true).setMinValue(1).setMaxValue(10)),
+ new SlashCommandBuilder().setName("hunt").setDescription("Berburu SOL level 1-5.").addNumberOption(o=>o.setName("amount").setDescription("Taruhan SOL").setRequired(true).setMinValue(0.000001)).addIntegerOption(o=>o.setName("level").setDescription("Level 1-5").setRequired(true).setMinValue(1).setMaxValue(5)),
+ new SlashCommandBuilder().setName("smpd").setDescription("Perintah admin SMPD.").addSubcommand(s=>s.setName("admin").setDescription("Admin SMPD").addStringOption(o=>o.setName("action").setDescription("Aksi").setRequired(true).addChoices({name:"freeze",value:"freeze"},{name:"unfreeze",value:"unfreeze"},{name:"status",value:"status"},{name:"credit",value:"credit"},{name:"debit",value:"debit"})).addUserOption(o=>o.setName("user").setDescription("User untuk credit/debit")).addNumberOption(o=>o.setName("amount").setDescription("Jumlah SOL untuk credit/debit").setMinValue(0.000001)))
 ].map(c=>c.toJSON());
-(async()=>{
- const rest=new REST({version:"10"}).setToken(process.env.DISCORD_TOKEN);
- const route=process.env.DISCORD_GUILD_ID?Routes.applicationGuildCommands(process.env.DISCORD_CLIENT_ID,process.env.DISCORD_GUILD_ID):Routes.applicationCommands(process.env.DISCORD_CLIENT_ID);
- await rest.put(route,{body:commands});console.log("SMPD commands registered");
-})().catch(e=>{console.error(e);process.exit(1)});
+(async()=>{const rest=new REST({version:"10"}).setToken(process.env.DISCORD_TOKEN);const route=process.env.DISCORD_GUILD_ID?Routes.applicationGuildCommands(process.env.DISCORD_CLIENT_ID,process.env.DISCORD_GUILD_ID):Routes.applicationCommands(process.env.DISCORD_CLIENT_ID);await rest.put(route,{body:commands});console.log("SMPD commands registered")})().catch(e=>{console.error(e);process.exit(1)});
