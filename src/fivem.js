@@ -1,348 +1,152 @@
 import { searchServers, getServerByEndpoint } from "fivem-server-api";
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function normalizePlayer(player) {
-  return {
-    id: Number(player?.id ?? player?.serverId ?? 0),
-    name: String(player?.name ?? "Unknown"),
-    ping: Number(player?.ping ?? 0),
-    identifiers: Array.isArray(player?.identifiers) ? player.identifiers : []
-  };
-}
-
-function normalizeServer(raw) {
-  if (!raw) return null;
-
-  const data = raw.Data ?? raw.data ?? raw;
-  const serverId = raw.EndPoint ?? raw.endpoint ?? data.EndPoint ?? null;
-
-  const players = Array.isArray(data.players)
-    ? data.players.map(normalizePlayer)
-    : [];
-
+function normalizeServer(server) {
   const endpoint =
-    Array.isArray(data.connectEndPoints) && data.connectEndPoints.length > 0
-      ? data.connectEndPoints[0]
-      : serverId;
-
-  const hostname =
-    data.hostname ??
-    data.vars?.sv_projectName ??
-    "Unknown FiveM Server";
+    server.endpoint ||
+    server.EndPoint ||
+    server.address ||
+    server.connectEndPoints?.[0];
 
   return {
-    id: serverId ? String(serverId) : null,
-    name: String(hostname),
-    endpoint: endpoint ? String(endpoint) : null,
-    players,
-    clients: Number(data.clients ?? players.length ?? 0),
-    maxClients: Number(data.svMaxclients ?? data.sv_maxclients ?? 0),
-    locale: String(data.vars?.locale ?? ""),
-    gametype: String(data.gametype ?? ""),
-    mapname: String(data.mapname ?? ""),
-    joinUrl: serverId ? `https://cfx.re/join/${serverId}` : null
+    name: server.name || server.hostname || "Unknown Server",
+    endpoint,
+    players: []
   };
 }
 
-export async function fetchConfiguredServer(server, options = {}) {
-  const timeout = options.timeout ?? 15000;
+async function fetchPlayers(server, timeout = 15000) {
+  if (!server.endpoint) return [];
 
-  try {
-    const raw = await getServerByEndpoint(server.endpoint, timeout);
-    const normalized = normalizeServer(raw);
+  let endpoint = server.endpoint;
 
-    if (!normalized) {
-      throw new Error("Invalid Cfx.re server response");
-    }
-
-    normalized.name = server.name || normalized.name;
-
-    return {
-      ...normalized,
-      source: "configured",
-      online: true
-    };
-  } catch (error) {
-    return {
-      id: server.endpoint,
-      name: server.name || server.endpoint,
-      endpoint: server.endpoint,
-      players: [],
-      clients: 0,
-      maxClients: 0,
-      locale: "",
-      gametype: "",
-      mapname: "",
-      joinUrl: null,
-      source: "configured",
-      online: false,
-      error: error?.message || "Request failed"
-    };
+  if (endpoint.includes("://")) {
+    endpoint = endpoint.split("://")[1];
   }
-}
 
-async function fetchJson(url, timeoutMs) {
+  endpoint = endpoint.replace(/\/+$/, "");
+
+  if (
+    endpoint.includes("localhost") ||
+    endpoint.startsWith("127.") ||
+    endpoint.startsWith("0.0.0.0")
+  ) {
+    return [];
+  }
+
+  const url = `http://${endpoint}/players.json`;
   const controller = new AbortController();
-
-  const timer = setTimeout(() => {
-    controller.abort();
-  }, timeoutMs);
+  const timer = setTimeout(() => controller.abort(), timeout);
 
   try {
     const response = await fetch(url, {
-      method: "GET",
+      signal: controller.signal,
       headers: {
-        Accept: "application/json",
-        "User-Agent": "FiveM-Player-Finder/1.1"
-      },
-      signal: controller.signal
+        "User-Agent": "FiveM-Player-Finder"
+      }
     });
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
+    if (!response.ok) return [];
 
-    return await response.json();
+    const data = await response.json();
+
+    if (!Array.isArray(data)) return [];
+
+    return data.map((p) => ({
+      id: p.id,
+      name: p.name || "Unknown",
+      ping: Number.isFinite(Number(p.ping))
+        ? Number(p.ping)
+        : null
+    }));
+  } catch {
+    return [];
   } finally {
     clearTimeout(timer);
   }
 }
 
-function buildPlayersUrl(endpoint) {
-  if (!endpoint) return null;
-
-  let value = String(endpoint).trim();
-
-  if (!value) return null;
-
-  if (
-    value.includes("private-placeholder.cfx.re") ||
-    value.includes("private-placeholder")
-  ) {
-    return null;
-  }
-
-  if (!/^https?:\/\//i.test(value)) {
-    value = `http://${value}`;
-  }
-
-  try {
-    const url = new URL(value);
-
-    url.pathname = "/players.json";
-    url.search = "";
-    url.hash = "";
-
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
-
-async function fetchPlayersForServer(server, timeoutMs) {
-  const playersUrl = buildPlayersUrl(server.endpoint);
-
-  if (!playersUrl) return server;
-
-  try {
-    const data = await fetchJson(playersUrl, timeoutMs);
-
-    const players = Array.isArray(data)
-      ? data.map(normalizePlayer)
-      : Array.isArray(data?.players)
-        ? data.players.map(normalizePlayer)
-        : [];
-
-    return {
-      ...server,
-      players,
-      clients: players.length
-    };
-  } catch (firstError) {
-    if (playersUrl.startsWith("http://")) {
-      try {
-        const httpsUrl = playersUrl.replace(
-          /^http:\/\//i,
-          "https://"
-        );
-
-        const data = await fetchJson(httpsUrl, timeoutMs);
-
-        const players = Array.isArray(data)
-          ? data.map(normalizePlayer)
-          : Array.isArray(data?.players)
-            ? data.players.map(normalizePlayer)
-            : [];
-
-        return {
-          ...server,
-          players,
-          clients: players.length
-        };
-      } catch {
-        // Gunakan data discovery jika players.json tidak tersedia.
-      }
-    }
-
-    return {
-      ...server,
-      players: Array.isArray(server.players)
-        ? server.players
-        : [],
-      playerFetchError:
-        firstError?.message ||
-        "players.json unavailable"
-    };
-  }
-}
-
-async function enrichPlayers(
-  servers,
-  {
-    timeout = 10000,
-    concurrency = 8,
-    delayMs = 100
-  } = {}
-) {
-  const result = new Array(servers.length);
-
-  let cursor = 0;
-
-  async function worker() {
-    while (true) {
-      const index = cursor++;
-
-      if (index >= servers.length) {
-        return;
-      }
-
-      const server = servers[index];
-
-      result[index] = await fetchPlayersForServer(
-        server,
-        timeout
-      );
-
-      if (delayMs > 0) {
-        await sleep(delayMs);
-      }
-    }
-  }
-
-  const workerCount = Math.min(
-    Math.max(1, Number(concurrency) || 1),
-    servers.length || 1
-  );
-
-  await Promise.all(
-    Array.from(
-      { length: workerCount },
-      () => worker()
-    )
-  );
-
-  return result.filter(Boolean);
-}
-
 export async function discoverServers({
-  limit = 100,
-  timeout = 30000,
-  locales = [],
-  delayMs = 100
+  limit = 25,
+  timeout = 15000,
+  locales = "id-ID"
 } = {}) {
-  const localeList = locales.filter(Boolean);
-  const result = [];
+  const result = await searchServers({
+    limit,
+    locale: locales
+  });
 
-  const rawServers =
-    localeList.length === 1
-      ? await searchServers(
-          { locale: localeList[0] },
-          limit,
-          timeout,
-          0
-        )
-      : await searchServers(
-          {},
-          limit,
-          timeout,
-          0
-        );
+  const rawServers = result?.Data || result?.data || [];
 
-  for (const raw of rawServers ?? []) {
-    const server = normalizeServer(raw);
+  const servers = rawServers
+    .map(normalizeServer)
+    .filter((s) => s.endpoint);
 
-    if (!server) continue;
+  const output = [];
 
-    if (
-      localeList.length > 1 &&
-      server.locale &&
-      !localeList.includes(server.locale)
-    ) {
-      continue;
-    }
+  for (const server of servers) {
+    const players = await fetchPlayers(server, timeout);
 
-    result.push({
+    output.push({
       ...server,
-      source: "discovery",
-      online: true
+      players
     });
   }
 
-  if (result.length === 0) {
-    return result;
-  }
+  return output;
+}
 
-  return enrichPlayers(
-    result,
-    {
-      timeout: Math.max(
-        3000,
-        Math.min(
-          Number(timeout) || 10000,
-          15000
-        )
-      ),
-      concurrency: 8,
-      delayMs
-    }
-  );
+export async function fetchConfiguredServer(server, {
+  timeout = 15000
+} = {}) {
+  try {
+    const endpoint = server.endpoint;
+
+    const info = await getServerByEndpoint(endpoint, timeout);
+
+    const normalized = normalizeServer({
+      ...info,
+      name: server.name || info?.name || info?.hostname,
+      endpoint
+    });
+
+    normalized.players = await fetchPlayers(normalized, timeout);
+
+    return normalized;
+  } catch (error) {
+    console.error(
+      `Gagal mengambil server ${server.name || server.endpoint}:`,
+      error?.message || error
+    );
+
+    return {
+      name: server.name || server.endpoint,
+      endpoint: server.endpoint,
+      players: []
+    };
+  }
 }
 
 export function findPlayers(servers, term) {
-  const query = String(term)
-    .trim()
-    .toLocaleLowerCase();
+  const query = term.toLowerCase();
 
-  if (!query) {
-    return [];
-  }
+  const results = [];
 
-  const matches = [];
+  for (const server of servers || []) {
+    for (const player of server.players || []) {
+      const name = String(player.name || "");
 
-  for (const server of servers ?? []) {
-    for (const player of server.players ?? []) {
-      if (
-        !String(player.name)
-          .toLocaleLowerCase()
-          .includes(query)
-      ) {
-        continue;
-      }
+      if (!name.toLowerCase().includes(query)) continue;
 
-      matches.push({
-        serverId: server.id,
+      results.push({
         serverName: server.name,
-        serverEndpoint: server.endpoint,
         playerId: player.id,
-        playerName: player.name,
-        ping: player.ping,
-        joinUrl: server.joinUrl,
-        locale: server.locale,
-        source: server.source
+        playerName: name,
+        ping: Number.isFinite(Number(player.ping))
+          ? Number(player.ping)
+          : null
       });
     }
   }
 
-  return matches;
+  return results;
 }
