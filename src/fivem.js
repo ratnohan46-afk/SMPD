@@ -47,16 +47,23 @@ function normalizeServer(raw) {
 }
 
 export async function fetchConfiguredServer(server, options = {}) {
-  const timeout = options.timeout ?? 7000;
+  const timeout = options.timeout ?? 15000;
 
   try {
-    const raw = await getServerByEndpoint(server.endpoint, { timeout });
+    const raw = await getServerByEndpoint(server.endpoint, timeout);
     const normalized = normalizeServer(raw);
 
-    if (!normalized) throw new Error("Invalid Cfx.re server response");
+    if (!normalized) {
+      throw new Error("Invalid Cfx.re server response");
+    }
 
     normalized.name = server.name || normalized.name;
-    return { ...normalized, source: "configured", online: true };
+
+    return {
+      ...normalized,
+      source: "configured",
+      online: true
+    };
   } catch (error) {
     return {
       id: server.endpoint,
@@ -76,64 +83,86 @@ export async function fetchConfiguredServer(server, options = {}) {
   }
 }
 
-export async function discoverServers({
-  limit = 100,
-  timeout = 7000,
-  locales = [],
-  delayMs = 0
-} = {}) {
-  const localeList = locales.filter(Boolean);
-  const result = [];
+async function fetchJson(url, timeoutMs) {
+  const controller = new AbortController();
 
-  // v1.6.1 exposes searchServers() for Cfx.re server discovery.
-  // A single locale can be passed to the API; multiple locales are filtered below.
-  const rawServers = localeList.length === 1
-    ? await searchServers({ locale: localeList[0] }, limit, timeout, 0)
-    : await searchServers({}, limit, timeout, 0);
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
 
-  for (const raw of rawServers ?? []) {
-    const server = normalizeServer(raw);
-    if (!server) continue;
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "FiveM-Player-Finder/1.1"
+      },
+      signal: controller.signal
+    });
 
-    if (
-      localeList.length > 1 &&
-      server.locale &&
-      !localeList.includes(server.locale)
-    ) {
-      continue;
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
     }
 
-    result.push({ ...server, source: "discovery", online: true });
-
-    if (delayMs > 0) await sleep(delayMs);
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
   }
-
-  return result;
 }
 
-export function findPlayers(servers, term) {
-  const q = String(term).trim().toLocaleLowerCase();
-  if (!q) return [];
+function buildPlayersUrl(endpoint) {
+  if (!endpoint) return null;
 
-  const matches = [];
+  let value = String(endpoint).trim();
 
-  for (const server of servers ?? []) {
-    for (const player of server.players ?? []) {
-      if (!String(player.name).toLocaleLowerCase().includes(q)) continue;
+  if (!value) return null;
 
-      matches.push({
-        serverId: server.id,
-        serverName: server.name,
-        serverEndpoint: server.endpoint,
-        playerId: player.id,
-        playerName: player.name,
-        ping: player.ping,
-        joinUrl: server.joinUrl,
-        locale: server.locale,
-        source: server.source
-      });
-    }
+  // Server private tidak bisa diakses langsung.
+  if (
+    value.includes("private-placeholder.cfx.re") ||
+    value.includes("private-placeholder")
+  ) {
+    return null;
   }
 
-  return matches;
+  if (!/^https?:\/\//i.test(value)) {
+    value = `http://${value}`;
+  }
+
+  try {
+    const url = new URL(value);
+
+    url.pathname = "/players.json";
+    url.search = "";
+    url.hash = "";
+
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
+
+async function fetchPlayersForServer(server, timeoutMs) {
+  const playersUrl = buildPlayersUrl(server.endpoint);
+
+  if (!playersUrl) {
+    return server;
+  }
+
+  try {
+    const data = await fetchJson(playersUrl, timeoutMs);
+
+    const players = Array.isArray(data)
+      ? data.map(normalizePlayer)
+      : Array.isArray(data?.players)
+        ? data.players.map(normalizePlayer)
+        : [];
+
+    return {
+      ...server,
+      players,
+      clients: players.length
+    };
+  } catch (firstError) {
+
+    // C
