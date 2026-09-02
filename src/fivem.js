@@ -1,23 +1,27 @@
 import {
   searchServers,
-  getServerByEndpoint,
-  getAllServers
+  getServerByEndpoint
 } from "fivem-server-api";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function normalizePlayer(p) {
+  return {
+    id: Number(p?.id ?? p?.serverId ?? 0),
+    name: String(p?.name ?? "Unknown"),
+    ping: Number(p?.ping ?? 0),
+    identifiers: Array.isArray(p?.identifiers) ? p.identifiers : []
+  };
+}
+
 function normalizeServer(raw) {
   if (!raw) return null;
+
   const data = raw.Data ?? raw.data ?? raw;
   const endpointId = raw.EndPoint ?? raw.endpoint ?? data.EndPoint ?? null;
 
   const players = Array.isArray(data.players)
-    ? data.players.map((p) => ({
-        id: Number(p.id ?? p.serverId ?? 0),
-        name: String(p.name ?? "Unknown"),
-        ping: Number(p.ping ?? 0),
-        identifiers: Array.isArray(p.identifiers) ? p.identifiers : []
-      }))
+    ? data.players.map(normalizePlayer)
     : [];
 
   const endpoint =
@@ -25,14 +29,12 @@ function normalizeServer(raw) {
       ? data.connectEndPoints[0]
       : endpointId;
 
+  const projectName = data.vars?.sv_projectName;
+  const hostname = data.hostname ?? projectName ?? "Unknown FiveM Server";
+
   return {
     id: endpointId ? String(endpointId) : null,
-    name: String(
-      data.hostname ??
-      data.vars?.sv_projectName ??
-      data.vars?.sv_projectName?.toString?.() ??
-      "Unknown FiveM Server"
-    ),
+    name: String(hostname),
     endpoint: endpoint ? String(endpoint) : null,
     players,
     clients: Number(data.clients ?? players.length ?? 0),
@@ -46,10 +48,13 @@ function normalizeServer(raw) {
 
 export async function fetchConfiguredServer(server, options = {}) {
   const timeout = options.timeout ?? 7000;
+
   try {
     const raw = await getServerByEndpoint(server.endpoint, { timeout });
     const normalized = normalizeServer(raw);
-    if (!normalized) throw new Error("Invalid Cfx server response");
+
+    if (!normalized) throw new Error("Invalid Cfx.re server response");
+
     normalized.name = server.name || normalized.name;
     return { ...normalized, source: "configured", online: true };
   } catch (error) {
@@ -72,28 +77,20 @@ export async function fetchConfiguredServer(server, options = {}) {
 }
 
 export async function discoverServers({
-  limit = 200,
+  limit = 100,
   timeout = 7000,
   locales = [],
-  delayMs = 100
+  delayMs = 0
 } = {}) {
-  // fivem-server-api decodes Cfx.re's streamRedir feed.
-  // searchServers applies client-side filters after decoding the feed.
   const localeList = locales.filter(Boolean);
-  let rawServers;
-
-  if (localeList.length === 1) {
-    rawServers = await searchServers(
-      { locale: localeList[0] },
-      limit,
-      timeout,
-      0
-    );
-  } else {
-    rawServers = await searchServers({}, limit, timeout, 0);
-  }
-
   const result = [];
+
+  // v1.6.1 exposes searchServers() for Cfx.re server discovery.
+  // A single locale can be passed to the API; multiple locales are filtered below.
+  const rawServers = localeList.length === 1
+    ? await searchServers({ locale: localeList[0] }, limit, timeout, 0)
+    : await searchServers({}, limit, timeout, 0);
+
   for (const raw of rawServers ?? []) {
     const server = normalizeServer(raw);
     if (!server) continue;
@@ -107,15 +104,11 @@ export async function discoverServers({
     }
 
     result.push({ ...server, source: "discovery", online: true });
+
     if (delayMs > 0) await sleep(delayMs);
   }
 
   return result;
-}
-
-export async function getDiscoveryServersAll({ timeout = 30000 } = {}) {
-  const raw = await getAllServers();
-  return (raw ?? []).map(normalizeServer).filter(Boolean);
 }
 
 export function findPlayers(servers, term) {
@@ -124,21 +117,21 @@ export function findPlayers(servers, term) {
 
   const matches = [];
 
-  for (const server of servers) {
+  for (const server of servers ?? []) {
     for (const player of server.players ?? []) {
-      if (String(player.name).toLocaleLowerCase().includes(q)) {
-        matches.push({
-          serverId: server.id,
-          serverName: server.name,
-          serverEndpoint: server.endpoint,
-          playerId: player.id,
-          playerName: player.name,
-          ping: player.ping,
-          joinUrl: server.joinUrl,
-          locale: server.locale,
-          source: server.source
-        });
-      }
+      if (!String(player.name).toLocaleLowerCase().includes(q)) continue;
+
+      matches.push({
+        serverId: server.id,
+        serverName: server.name,
+        serverEndpoint: server.endpoint,
+        playerId: player.id,
+        playerName: player.name,
+        ping: player.ping,
+        joinUrl: server.joinUrl,
+        locale: server.locale,
+        source: server.source
+      });
     }
   }
 
