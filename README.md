@@ -1,68 +1,115 @@
-# SMPD FINAL — Solana Discord Economy
+# FiveM Player Finder — Final v1
 
-Production-oriented baseline for a custodial Solana Discord wallet.
+Bot Discord untuk mencari player FiveM yang sedang online, dengan tampilan Embed seperti tracker pada screenshot.
 
-## Included
-- Automatic Solana wallet per Discord user
-- Encrypted private keys (AES-256-GCM)
-- On-chain SOL deposit scanner using finalized transactions
-- Automatic deposit credit with duplicate protection
-- SOL balance + live IDR estimate
-- Internal `/tip` and `/give`
-- `/rain` to active members
-- Persistent button-based `/giveaway`
-- `/history`
-- `/withdraw` on-chain SOL withdrawal
-- Withdrawal cooldown and min/max limits
-- Admin `/smpd admin` commands
-- SQLite WAL + transaction ledger
-- Emergency freeze
-- Audit log
-- Startup reconciliation of pending withdrawals
+## Fitur
 
-## Important security
-This is a real-money custodial system. Do NOT use the example master key. Generate a long random secret and store it as a hosting secret. Do not commit `.env` or the SQLite database.
+- `/find nama`
+- `/finder-status`
+- Mode `configured`: scan server yang kamu masukkan sendiri.
+- Mode `discovery`: mengambil server dari feed server FiveM/Cfx.re lalu mencari player pada hasil yang diindeks.
+- Refresh otomatis.
+- Cache lokal agar bot tetap punya data terakhir jika refresh berikutnya gagal.
+- Menampilkan server, player ID, nama, dan ping.
+- Filter locale opsional, misalnya `id-ID`.
+- Batas jumlah server discovery agar hosting tidak langsung terbebani.
 
-For serious production funds, put key encryption behind a KMS/HSM/secret manager and use a dedicated paid Solana RPC provider. Start with small amounts and test on Solana devnet before mainnet.
+## Sumber data
 
-## Setup
-1. Install Node.js 20+.
-2. `npm install`
-3. Copy `.env.example` to `.env`.
-4. Set Discord token/client ID, RPC URL and a strong MASTER_KEY.
-5. Put your Discord user ID in ADMIN_USER_IDS for admin commands.
-6. `npm run register`
-7. `npm start`
+Bot menggunakan data server/player dari endpoint dan feed Cfx/FiveM melalui library `fivem-server-api`. Server FiveM juga menyediakan endpoint `players.json`, `info.json`, dan `dynamic.json` pada server yang dapat diakses.
 
-For fast command registration in one server, set DISCORD_GUILD_ID. Remove it for global registration.
+## Instalasi
 
-## Commands
-User:
-- `/wallet`
-- `/balance`
-- `/deposit`
-- `/withdraw address amount`
-- `/tip user amount`
-- `/give user amount`
-- `/rain amount`
-- `/giveaway amount minutes`
-- `/history`
+Gunakan Node.js 20 atau lebih baru.
 
-Admin:
-- `/smpd admin freeze`
-- `/smpd admin unfreeze`
-- `/smpd admin status`
-- `/smpd admin credit user amount` (manual internal credit; audit logged)
-- `/smpd admin debit user amount` (manual internal debit; audit logged)
+```bash
+npm install
+```
 
-## Deposit model
-Each user receives a unique Solana address. The worker scans finalized signatures for that address, loads each transaction, calculates the wallet's net lamport increase and credits only positive finalized net increases. Every signature is recorded once.
+Salin `.env.example` menjadi `.env`, lalu isi:
 
-## Internal transfers
-Tip/Give/Rain do NOT move SOL on-chain. They move the user's custodial ledger balance. This avoids unnecessary network fees.
+```env
+DISCORD_TOKEN=token_bot
+CLIENT_ID=application_id
+GUILD_ID=id_server_discord
+```
 
-## Withdrawal model
-Withdrawals are real Solana transfers from the user's custodial wallet. The requested amount is reserved in the database before broadcast. A pending withdrawal is reconciled after restart so a crash cannot silently cause a second spend.
+Untuk testing cepat, isi `GUILD_ID`. Slash command guild biasanya muncul lebih cepat daripada global command.
 
-## IDR
-IDR is display-only and is fetched from the configured price API. It is not a second cash balance.
+## Mode discovery
+
+Default:
+
+```env
+SEARCH_MODE=discovery
+DISCOVERY_LIMIT=200
+DISCOVERY_LOCALES=id-ID
+CACHE_REFRESH_SECONDS=60
+```
+
+`DISCOVERY_LIMIT` adalah jumlah server yang diambil dari hasil discovery, bukan jaminan bahwa seluruh server FiveM di dunia akan diperiksa.
+
+Jika ingin fokus Indonesia:
+
+```env
+DISCOVERY_LOCALES=id-ID
+```
+
+Jika ingin tanpa filter locale:
+
+```env
+DISCOVERY_LOCALES=
+```
+
+## Mode server sendiri
+
+Ubah:
+
+```env
+SEARCH_MODE=configured
+```
+
+Kemudian aktifkan server di `config/servers.json`:
+
+```json
+{
+  "servers": [
+    {
+      "name": "Server Saya",
+      "endpoint": "1.2.3.4:30120",
+      "enabled": true
+    }
+  ]
+}
+```
+
+## Menjalankan
+
+```bash
+npm start
+```
+
+## Penting tentang pencarian global
+
+Mencari player di seluruh ekosistem FiveM bukan sama dengan mencari nama server. Bot harus memperoleh daftar server dan player dari feed/server endpoint, sehingga jumlah server yang dipindai, timeout, refresh, dan rate request harus dibatasi.
+
+Karena endpoint Cfx/FiveM dapat berubah, project sengaja memakai library `fivem-server-api` dan konfigurasi batas discovery. Jika Cfx mengubah API, bagian integrasi `src/fivem.js` adalah bagian utama yang perlu diperbarui.
+
+## Struktur
+
+```text
+fivem-player-finder/
+├── config/
+│   └── servers.json
+├── data/
+├── src/
+│   ├── cache.js
+│   ├── config.js
+│   ├── discord.js
+│   ├── fivem.js
+│   └── index.js
+├── .env.example
+├── .gitignore
+├── package.json
+└── README.md
+```
