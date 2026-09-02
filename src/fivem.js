@@ -1,39 +1,64 @@
 import { searchServers, getServerByEndpoint } from "fivem-server-api";
 
-function normalizeServer(server) {
-  const endpoint =
-    server.endpoint ||
-    server.EndPoint ||
-    server.address ||
-    server.connectEndPoints?.[0];
+function cleanEndpoint(value) {
+  if (!value || typeof value !== "string") return null;
 
-  return {
-    name: server.name || server.hostname || "Unknown Server",
-    endpoint,
-    players: []
-  };
-}
-
-async function fetchPlayers(server, timeout = 15000) {
-  if (!server.endpoint) return [];
-
-  let endpoint = server.endpoint;
+  let endpoint = value.trim();
 
   if (endpoint.includes("://")) {
     endpoint = endpoint.split("://")[1];
   }
 
-  endpoint = endpoint.replace(/\/+$/, "");
+  endpoint = endpoint.split("/")[0].trim().replace(/\/+$/, "");
 
-  if (
-    endpoint.includes("localhost") ||
-    endpoint.startsWith("127.") ||
-    endpoint.startsWith("0.0.0.0")
-  ) {
-    return [];
-  }
+  if (!endpoint) return null;
+  if (endpoint.includes("private-placeholder.cfx.re")) return null;
+  if (endpoint.includes("localhost")) return null;
+  if (endpoint.startsWith("127.")) return null;
+  if (endpoint.startsWith("0.0.0.0")) return null;
 
-  const url = `http://${endpoint}/players.json`;
+  return endpoint;
+}
+
+function normalizePlayers(players) {
+  if (!Array.isArray(players)) return [];
+
+  return players.map((p) => ({
+    id: p?.id ?? "?",
+    name: String(p?.name ?? "Unknown"),
+    ping: Number.isFinite(Number(p?.ping)) ? Number(p.ping) : null
+  }));
+}
+
+function normalizeServer(result) {
+  const data = result?.Data || result?.data || result || {};
+
+  const endpoint =
+    cleanEndpoint(result?.EndPoint) ||
+    cleanEndpoint(data.connectEndPoints?.[0]) ||
+    cleanEndpoint(result?.endpoint) ||
+    cleanEndpoint(data.endpoint);
+
+  return {
+    name: String(
+      data.hostname ||
+      data.vars?.sv_projectName ||
+      result?.name ||
+      result?.hostname ||
+      "Unknown Server"
+    ),
+    endpoint,
+    players: normalizePlayers(data.players),
+    clients: Number.isFinite(Number(data.clients))
+      ? Number(data.clients)
+      : 0,
+    maxClients: Number.isFinite(Number(data.svMaxclients))
+      ? Number(data.svMaxclients)
+      : 0
+  };
+}
+
+async function getJson(url, timeout) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
 
@@ -41,107 +66,214 @@ async function fetchPlayers(server, timeout = 15000) {
     const response = await fetch(url, {
       signal: controller.signal,
       headers: {
-        "User-Agent": "FiveM-Player-Finder"
+        Accept: "application/json",
+        "User-Agent": "SMPD-FiveM-Finder/1.0"
       }
     });
 
-    if (!response.ok) return [];
-
-    const data = await response.json();
-
-    if (!Array.isArray(data)) return [];
-
-    return data.map((p) => ({
-      id: p.id,
-      name: p.name || "Unknown",
-      ping: Number.isFinite(Number(p.ping))
-        ? Number(p.ping)
-        : null
-    }));
+    if (!response.ok) return null;
+    return await response.json();
   } catch {
-    return [];
+    return null;
   } finally {
     clearTimeout(timer);
   }
 }
 
-export async function discoverServers({
-  limit = 25,
-  timeout = 15000,
-  locales = "id-ID"
-} = {}) {
-  const result = await searchServers({
-    limit,
-    locale: locales
-  });
+async function fetchPlayers(server, timeout) {
+  const endpoint = cleanEndpoint(server?.endpoint);
 
-  const rawServers = result?.Data || result?.data || [];
+  // Discovery data already contains a player snapshot.
+  // Keep it if this server has no public endpoint.
+  if (!endpoint) return server?.players || [];
 
-  const servers = rawServers
-    .map(normalizeServer)
-    .filter((s) => s.endpoint);
+  const playerTimeout = Math.min(Math.max(timeout, 5000), 10000);
 
-  const output = [];
+  const urls = [
+    `http://${endpoint}/players.json`,
+    `https://${endpoint}/players.json`
+  ];
 
-  for (const server of servers) {
-    const players = await fetchPlayers(server, timeout);
+  for (const url of urls) {
+    const data = await getJson(url, playerTimeout);
 
-    output.push({
-      ...server,
-      players
-    });
+    if (Array.isArray(data)) {
+      return normalizePlayers(data);
+    }
   }
 
-  return output;
+  // Endpoint failed: keep the players supplied by Cfx.re discovery.
+  return server?.players || [];
 }
 
-export async function fetchConfiguredServer(server, {
+async function refreshServer(server, timeout) {
+  const players = await fetchPlayers(server, timeout);
+
+  return {
+    ...server,
+    players,
+    clients: players.length || server.clients || 0
+  };
+}
+
+async function mapConcurrent(items, worker, concurrency = 8) {
+  const results = new Array(items.length);
+  let next = 0;
+
+  async function runner() {
+    while (true) {
+      const index = next++;
+      if (index >= items.length) return;
+
+      try {
+        results[index] = await worker(items[index]);
+      } catch {
+        results[index] = items[index];
+      }
+    }
+  }
+
+  const count = Math.min(concurrency, items.length);
+  await Promise.all(
+    Array.from({ length: count }, () => runner())
+  );
+
+  return results;
+}
+
+export async function discoverServers({
+  limit = 25,
   timeout = 15000
 } = {}) {
-  try {
-    const endpoint = server.endpoint;
+  const safeLimit = Math.max(1, Number(limit) || 25);
+  const safeTimeout = Math.max(5000, Number(timeout) || 15000);
 
-    const info = await getServerByEndpoint(endpoint, timeout);
+  /*
+   * fivem-server-api 1.6.1 returns SearchResult[] from searchServers().
+   * The old code incorrectly treated the result as one object and read
+   * result.Data, which caused discovery to become an empty array.
+   *
+   * Do not pass DISCOVERY_LOCALES here. The config loader stores locales
+   * as an array, while the API filter expects a string. Broad discovery
+   * is intentionally left unfiltered.
+   */
+  let rawServers = [];
+
+  try {
+    rawServers = await searchServers(
+      {},
+      safeLimit,
+      safeTimeout,
+      0
+    );
+  } catch (error) {
+    console.error(
+      "FiveM discovery gagal:",
+      error?.message || error
+    );
+    return [];
+  }
+
+  if (!Array.isArray(rawServers)) {
+    console.warn("FiveM discovery mengembalikan data yang bukan array.");
+    return [];
+  }
+
+  /*
+   * Do NOT require an endpoint here.
+   * Cfx.re discovery itself can already provide Data.players.
+   * If an endpoint is private/unreachable, we still want to index
+   * the player snapshot returned by discovery.
+   */
+  const servers = rawServers.map(normalizeServer);
+
+  if (!servers.length) {
+    console.warn(
+      "FiveM discovery mengembalikan 0 server."
+    );
+    return [];
+  }
+
+  return mapConcurrent(
+    servers,
+    (server) => refreshServer(server, safeTimeout),
+    8
+  );
+}
+
+export async function fetchConfiguredServer(
+  server,
+  { timeout = 15000 } = {}
+) {
+  const endpoint = cleanEndpoint(
+    server?.endpoint ||
+    server?.address ||
+    server?.ip
+  );
+
+  if (!endpoint) {
+    return {
+      name: server?.name || "Unknown Server",
+      endpoint: null,
+      players: []
+    };
+  }
+
+  try {
+    const result = await getServerByEndpoint(
+      endpoint,
+      timeout
+    );
 
     const normalized = normalizeServer({
-      ...info,
-      name: server.name || info?.name || info?.hostname,
-      endpoint
+      ...(result || {}),
+      EndPoint: result?.EndPoint || endpoint,
+      name:
+        server?.name ||
+        result?.Data?.hostname ||
+        result?.name
     });
 
-    normalized.players = await fetchPlayers(normalized, timeout);
+    normalized.players = await fetchPlayers(
+      normalized,
+      timeout
+    );
+
+    normalized.clients = normalized.players.length;
 
     return normalized;
   } catch (error) {
     console.error(
-      `Gagal mengambil server ${server.name || server.endpoint}:`,
+      `Configured server gagal: ${server?.name || endpoint}:`,
       error?.message || error
     );
 
     return {
-      name: server.name || server.endpoint,
-      endpoint: server.endpoint,
+      name: server?.name || endpoint,
+      endpoint,
       players: []
     };
   }
 }
 
 export function findPlayers(servers, term) {
-  const query = term.toLowerCase();
+  const query = String(term || "").trim().toLowerCase();
+
+  if (!query) return [];
 
   const results = [];
 
   for (const server of servers || []) {
-    for (const player of server.players || []) {
-      const name = String(player.name || "");
+    for (const player of server?.players || []) {
+      const name = String(player?.name || "");
 
       if (!name.toLowerCase().includes(query)) continue;
 
       results.push({
-        serverName: server.name,
-        playerId: player.id,
+        serverName: server?.name || "Unknown Server",
+        playerId: player?.id ?? "?",
         playerName: name,
-        ping: Number.isFinite(Number(player.ping))
+        ping: Number.isFinite(Number(player?.ping))
           ? Number(player.ping)
           : null
       });
